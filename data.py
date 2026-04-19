@@ -117,7 +117,7 @@ def get_health_advice(aqi: int) -> str:
 # 5. MAIN TEST
 if __name__ == "__main__":
     # Test with a few cities
-    cities = ["phnompenh", "bangkok", "singapore"]
+    cities = ["tokyo", "hanoi", "singapore"]
     aqi_list = fetch_multiple_cities(cities)
 
     # Convert to DataFrame
