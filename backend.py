@@ -1,55 +1,65 @@
-import requests
-import pandas as pd
+import os
 from datetime import datetime
+from typing import Dict, List, Optional
 
-API_TOKEN = "2767aa8903e54e7d0780b349eb51133dc258df78"
+import pandas as pd
+import requests
+
 BASE_URL = "https://api.waqi.info/feed"
+API_TOKEN = "2767aa8903e54e7d0780b349eb51133dc258df78"
 
 
-# 1. FETCH REAL-TIME AQI DATA (Data Structure - Dictionary)
-def fetch_aqi(city: str) -> dict:
+def fetch_aqi(city: str) -> Dict:
     """
     Fetch real-time AQI data for a given city.
-    Returns a dictionary with AQI and pollutant values.
+    Returns a clean dictionary containing AQI, timestamp, and pollutant values.
     """
-    url = f"{BASE_URL}/{city}/?token={API_TOKEN}"
-    response = requests.get(url)
-    raw = response.json()
+    if not API_TOKEN:
+        raise ValueError("API token not found. Please set WAQI_API_TOKEN.")
 
-    if raw["status"] != "ok":
+    if not city or not city.strip():
         return {}
 
-    data = raw["data"]
+    url = f"{BASE_URL}/{city.strip()}/?token={API_TOKEN}"
 
-    # FIX AQI VALUE
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        raw = response.json()
+    except requests.exceptions.RequestException:
+        return {}
+    except ValueError:
+        return {}
+
+    if raw.get("status") != "ok":
+        return {}
+
+    data = raw.get("data", {})
+    iaqi = data.get("iaqi", {})
+
     aqi_raw = data.get("aqi")
-    aqi_value = None
+    aqi_value = safe_int(aqi_raw)
 
-    if isinstance(aqi_raw, int):
-        aqi_value = aqi_raw
-    elif isinstance(aqi_raw, str) and aqi_raw.isdigit():
-        aqi_value = int(aqi_raw)
-
-    # Store in a clean dictionary (Data Structure)
     return {
-        "city": city,
+        "city": data.get("city", {}).get("name", city.title()),
         "aqi": aqi_value,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "pollutants": {
-            "pm25": data["iaqi"].get("pm25", {}).get("v", None),
-            "pm10": data["iaqi"].get("pm10", {}).get("v", None),
-            "co":   data["iaqi"].get("co",   {}).get("v", None),
-            "no2":  data["iaqi"].get("no2",  {}).get("v", None),
-            "o3":   data["iaqi"].get("o3",   {}).get("v", None),
-        }
+            "pm25": get_pollutant_value(iaqi, "pm25"),
+            "pm10": get_pollutant_value(iaqi, "pm10"),
+            "co": get_pollutant_value(iaqi, "co"),
+            "no2": get_pollutant_value(iaqi, "no2"),
+            "o3": get_pollutant_value(iaqi, "o3"),
+            "so2": get_pollutant_value(iaqi, "so2"),
+        },
     }
 
-# 2. FETCH MULTIPLE CITIES (Data Structure - List of Dicts)
+
+def fetch_multiple_cities(cities: List[str]) -> List[Dict]:
     """
     Fetch AQI data for multiple cities.
-    Returns a list of dictionaries.
+    Returns a list of AQI dictionaries.
     """
-def fetch_multiple_cities(cities: list) -> list:
     results = []
     for city in cities:
         data = fetch_aqi(city)
@@ -57,30 +67,60 @@ def fetch_multiple_cities(cities: list) -> list:
             results.append(data)
     return results
 
-# 3. CONVERT TO PANDAS DATAFRAME (Data Manipulation)
 
-def to_dataframe(aqi_list: list) -> pd.DataFrame:
+def get_pollutant_value(iaqi: Dict, key: str) -> Optional[float]:
+    """
+    Safely get pollutant value from API response.
+    """
+    value = iaqi.get(key, {}).get("v")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def safe_int(value) -> Optional[int]:
+    """
+    Convert a value to int safely.
+    """
+    try:
+        if value is None:
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def to_dataframe(aqi_list: List[Dict]) -> pd.DataFrame:
+    """
+    Convert a list of AQI dictionaries into a pandas DataFrame.
+    """
     rows = []
     for entry in aqi_list:
+        pollutants = entry.get("pollutants", {})
         row = {
-            "City": entry["city"],
-            "AQI": entry["aqi"],
-            "Timestamp": entry["timestamp"],
-            "PM2.5": entry["pollutants"]["pm25"],
-            "PM10": entry["pollutants"]["pm10"],
-            "CO": entry["pollutants"]["co"],
-            "NO2": entry["pollutants"]["no2"],
-            "O3": entry["pollutants"]["o3"],
+            "City": entry.get("city"),
+            "AQI": entry.get("aqi"),
+            "Status": get_aqi_status(entry.get("aqi")),
+            "Timestamp": entry.get("timestamp"),
+            "PM2.5": pollutants.get("pm25"),
+            "PM10": pollutants.get("pm10"),
+            "CO": pollutants.get("co"),
+            "NO2": pollutants.get("no2"),
+            "O3": pollutants.get("o3"),
+            "SO2": pollutants.get("so2"),
         }
         rows.append(row)
 
     return pd.DataFrame(rows)
 
-# 4. AQI HEALTH STATUS LABEL
+
+def get_aqi_status(aqi: Optional[int]) -> str:
     """
-    Returns health status label based on AQI value.
+    Return AQI category label based on AQI value.
     """
-def get_aqi_status(aqi: int) -> str:
+    if aqi is None:
+        return "Unavailable"
     if aqi <= 50:
         return "Good 🟢"
     elif aqi <= 100:
@@ -91,20 +131,42 @@ def get_aqi_status(aqi: int) -> str:
         return "Unhealthy 🔴"
     elif aqi <= 300:
         return "Very Unhealthy 🟣"
-    else:
-        return "Hazardous ⚫"
+    return "Hazardous ⚫"
 
-# 5. HEALTH ADVICE
-def get_health_advice(aqi: int) -> str:
+
+def get_health_advice(aqi: Optional[int]) -> str:
+    """
+    Return health advice based on AQI value.
+    """
+    if aqi is None:
+        return "Air quality data is unavailable right now."
     if aqi <= 50:
-        return "Air quality is great! Safe for outdoor activities."
+        return "Air quality is great. Safe for outdoor activities."
     elif aqi <= 100:
-        return "Acceptable air quality. Sensitive people should limit prolonged outdoor exposure."
+        return "Air quality is acceptable. Sensitive people should reduce prolonged outdoor activity."
     elif aqi <= 150:
         return "Sensitive groups should reduce outdoor activities."
     elif aqi <= 200:
-        return "Everyone should limit outdoor activities. Wear a mask if going outside."
+        return "Everyone should limit outdoor activities. Consider wearing a mask outside."
     elif aqi <= 300:
-        return "Avoid outdoor activities. Keep windows closed."
-    else:
-        return "Emergency conditions. Stay indoors and avoid all outdoor exposure!"
+        return "Avoid outdoor activities. Keep windows closed if possible."
+    return "Emergency-level pollution. Stay indoors and avoid outdoor exposure."
+
+
+def get_aqi_color(aqi: Optional[int]) -> str:
+    """
+    Return a color name for AQI category.
+    """
+    if aqi is None:
+        return "gray"
+    if aqi <= 50:
+        return "green"
+    elif aqi <= 100:
+        return "yellow"
+    elif aqi <= 150:
+        return "orange"
+    elif aqi <= 200:
+        return "red"
+    elif aqi <= 300:
+        return "purple"
+    return "maroon"
