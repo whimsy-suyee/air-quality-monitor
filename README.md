@@ -22,7 +22,7 @@ pip install streamlit requests pandas
 This project uses the [World Air Quality Index API](https://aqicn.org/data-platform/token/).
 
 1. Get a free token at https://aqicn.org/data-platform/token/
-2. Open `aqi_monitor.py`
+2. Open `backend.py`
 3. Replace the token value:
 ```python
 API_TOKEN = "your_token_here"
